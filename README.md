@@ -44,6 +44,12 @@ arduino-cli board list
 make compile WIFICheckerM5Paper PORT=/dev/cu.usbserial-02142314
 ```
 
+`MONITOR=YES` を付けると、書き込み後にシリアルモニターを開きます。
+
+```sh
+make compile WIFICheckerM5Paper PORT=/dev/cu.usbserial-02142314 MONITOR=YES
+```
+
 ## 注意点
 
 - 通常は `make` を使い、Arduino CLI を直接実行しない
