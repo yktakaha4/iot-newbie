@@ -38,10 +38,10 @@ cp apps/WIFICheckerM5Paper/.env.example apps/WIFICheckerM5Paper/.env
 arduino-cli board list
 ```
 
-`PORT` を指定して書き込みます。
+`PORT` を指定すると、ビルド後に書き込みます。
 
 ```sh
-make upload WIFICheckerM5Paper PORT=/dev/cu.usbserial-02142314
+make compile WIFICheckerM5Paper PORT=/dev/cu.usbserial-02142314
 ```
 
 ## 注意点

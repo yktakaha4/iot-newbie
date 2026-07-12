@@ -2,20 +2,15 @@ ARDUINO_CLI := arduino-cli
 ARDUINO_CONFIG := arduino-cli.yaml
 PROFILE ?= default
 APPS_DIR := apps
-MAKE_TARGETS := build compile upload secrets list-apps require-app require-port
+MAKE_TARGETS := compile secrets list-apps require-app
 APP_FROM_GOALS := $(filter-out $(MAKE_TARGETS),$(MAKECMDGOALS))
 APP ?= $(firstword $(APP_FROM_GOALS))
 APP_DIR := $(APPS_DIR)/$(APP)
 
-.PHONY: build compile upload secrets list-apps require-app require-port
-
-build: compile
+.PHONY: compile secrets list-apps require-app
 
 compile: require-app secrets
 	$(ARDUINO_CLI) --config-file $(ARDUINO_CONFIG) compile --profile $(PROFILE) $(if $(PORT),-p $(PORT) -u,) $(APP_DIR)
-
-upload: require-app require-port secrets
-	$(ARDUINO_CLI) --config-file $(ARDUINO_CONFIG) compile --profile $(PROFILE) -p $(PORT) -u $(APP_DIR)
 
 secrets: require-app
 	@if [ -f "$(APP_DIR)/.env.example" ]; then \
@@ -38,11 +33,5 @@ require-app:
 		$(MAKE) --no-print-directory list-apps; \
 		exit 1; \
 	fi
-require-port:
-	@if [ -z "$(PORT)" ]; then \
-		echo "PORT is required for upload."; \
-		exit 1; \
-	fi
-
 %:
 	@:
