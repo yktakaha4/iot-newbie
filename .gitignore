@@ -1,0 +1,13 @@
+# Arduino CLI local state
+.arduino/
+Arduino/
+
+# Arduino build outputs
+build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# macOS
+.DS_Store
