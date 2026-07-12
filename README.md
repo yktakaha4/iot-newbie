@@ -17,11 +17,16 @@ IoT デバイス向けの Arduino CLI プロジェクト集です。コーディ
 ├── HelloWorldM5Paper/
 │   ├── HelloWorldM5Paper.ino
 │   └── sketch.yaml
+├── TRHCheckerM5Paper/
+│   ├── TRHCheckerM5Paper.ino
+│   └── sketch.yaml
 └── .gitignore
 ```
 
 - `HelloWorldM5Paper/HelloWorldM5Paper.ino`: M5Paper に `Hello World` を表示するサンプルスケッチ
 - `HelloWorldM5Paper/sketch.yaml`: `HelloWorldM5Paper` 用の FQBN、platform、ライブラリのバージョン定義
+- `TRHCheckerM5Paper/TRHCheckerM5Paper.ino`: M5Paper 内蔵 SHT30 の温度・湿度を表示するスケッチ
+- `TRHCheckerM5Paper/sketch.yaml`: `TRHCheckerM5Paper` 用の FQBN、platform、ライブラリのバージョン定義
 - `arduino-cli.yaml`: ローカル sketchbook と build cache の配置
 - `Arduino/`, `.arduino/`: ローカル生成物。コミットしない
 
