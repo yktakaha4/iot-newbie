@@ -28,6 +28,12 @@ make compile HelloWorldM5Paper
 cp apps/WIFICheckerM5Paper/.env.example apps/WIFICheckerM5Paper/.env
 ```
 
+Ambient へ送信する温湿度チェッカーでは、WiFi と Ambient の値を設定します。
+
+```sh
+cp apps/AmbientTRHCheckerM5Paper/.env.example apps/AmbientTRHCheckerM5Paper/.env
+```
+
 `.env` がある場合、`make compile` は `secrets.h` を自動生成してからビルドします。
 
 ## 書き込み
