@@ -26,34 +26,50 @@ if [ ! -f "$env_file" ]; then
   exit 1
 fi
 
-get_env_value() {
-  key="$1"
-  value="$(grep -E "^${key}=" "$env_file" | tail -n 1 | sed "s/^${key}=//")"
-  value="${value%\"}"
-  value="${value#\"}"
-  value="${value%\'}"
-  value="${value#\'}"
-  printf '%s' "$value"
-}
-
 escape_cpp_string() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
-
-wifi_ssid="$(get_env_value WIFI_SSID)"
-wifi_password="$(get_env_value WIFI_PASSWORD)"
-
-if [ -z "$wifi_ssid" ]; then
-  echo "WIFI_SSID is empty in $env_file." >&2
-  exit 1
-fi
 
 mkdir -p "$(dirname "$output_file")"
 cat > "$output_file" <<EOF
 #pragma once
 
-#define WIFI_SSID "$(escape_cpp_string "$wifi_ssid")"
-#define WIFI_PASSWORD "$(escape_cpp_string "$wifi_password")"
 EOF
+
+defined_count=0
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    ''|\#*) continue ;;
+  esac
+
+  key="${line%%=*}"
+  value="${line#*=}"
+
+  if [ "$key" = "$line" ]; then
+    echo "Invalid line in $env_file: $line" >&2
+    exit 1
+  fi
+
+  case "$key" in
+    [A-Za-z_][A-Za-z0-9_]*) ;;
+    *)
+      echo "Invalid key in $env_file: $key" >&2
+      exit 1
+      ;;
+  esac
+
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+
+  printf '#define %s "%s"\n' "$key" "$(escape_cpp_string "$value")" >> "$output_file"
+  defined_count=$((defined_count + 1))
+done < "$env_file"
+
+if [ "$defined_count" -eq 0 ]; then
+  echo "No KEY=VALUE entries found in $env_file." >&2
+  exit 1
+fi
 
 echo "Generated $output_file"

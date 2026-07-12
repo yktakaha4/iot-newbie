@@ -91,6 +91,7 @@ make compile APP=TRHCheckerM5Paper
 ```
 
 `.env.example` があるアプリでは、`make compile` が先に `secrets.h` を生成します。`PORT` を指定すると、ビルド後にデバイスへ書き込みます。
+`.env` の `KEY=VALUE` は `secrets.h` に `#define KEY "VALUE"` として出力されます。空行と `#` で始まるコメント行は無視されます。
 
 ```sh
 make compile APP=TRHCheckerM5Paper PORT=/dev/cu.usbserial-02142314
