@@ -1,14 +1,10 @@
 #include <M5Unified.h>
-#include <WiFi.h>
-
-#include "secrets.h"
 
 namespace {
 constexpr uint8_t kSht30Address = 0x44;
 constexpr uint32_t kI2cFrequency = 400000;
 constexpr uint32_t kSensorReadIntervalMs = 1000;
 constexpr uint32_t kDisplayRefreshIntervalMs = 1000;
-constexpr uint32_t kWifiConnectTimeoutMs = 15000;
 constexpr size_t kVisibleRows = 15;
 constexpr int32_t kMarginX = 14;
 constexpr int32_t kTitleY = 18;
@@ -27,7 +23,6 @@ uint32_t lastDisplayRefreshMs = 0;
 uint32_t sampleCount = 0;
 size_t nextDisplayRow = 0;
 bool hasPendingReading = false;
-bool wifiConnected = false;
 
 struct Reading {
   bool ok = false;
@@ -102,17 +97,6 @@ void readSensor() {
   ++sampleCount;
 }
 
-void connectWifi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  const uint32_t startedAt = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startedAt < kWifiConnectTimeoutMs) {
-    M5.delay(250);
-  }
-  wifiConnected = WiFi.status() == WL_CONNECTED;
-}
-
 void drawStaticFrame() {
   M5.Display.fillScreen(TFT_WHITE);
   M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
@@ -131,8 +115,7 @@ void drawStaticFrame() {
 
 void drawStatus() {
   char statusText[64];
-  snprintf(statusText, sizeof(statusText), "WiFi %s / Read %lus / Samples %lu",
-           wifiConnected ? "OK" : "NG",
+  snprintf(statusText, sizeof(statusText), "Read %lus / Samples %lu",
            static_cast<unsigned long>(kSensorReadIntervalMs / 1000),
            static_cast<unsigned long>(sampleCount));
   M5.Display.fillRect(kMarginX, kStatusY, kTableRight - kMarginX, 28, TFT_WHITE);
@@ -211,7 +194,6 @@ void setup() {
   drawStaticFrame();
   drawStatus();
   M5.Display.display();
-  connectWifi();
   readSensor();
   refreshDisplay();
   const uint32_t now = millis();

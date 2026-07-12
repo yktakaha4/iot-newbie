@@ -2,6 +2,9 @@ ARDUINO_CLI := arduino-cli
 ARDUINO_CONFIG := arduino-cli.yaml
 PROFILE ?= default
 APPS_DIR := apps
+MAKE_TARGETS := build compile upload secrets list-apps require-app require-port
+APP_FROM_GOALS := $(filter-out $(MAKE_TARGETS),$(MAKECMDGOALS))
+APP ?= $(firstword $(APP_FROM_GOALS))
 APP_DIR := $(APPS_DIR)/$(APP)
 
 .PHONY: build compile upload secrets list-apps require-app require-port
@@ -26,7 +29,7 @@ list-apps:
 
 require-app:
 	@if [ -z "$(APP)" ]; then \
-		echo "APP is required. Example: make compile APP=TRHCheckerM5Paper"; \
+		echo "APP is required. Example: make compile TRHCheckerM5Paper"; \
 		exit 1; \
 	fi
 	@if [ ! -f "$(APP_DIR)/sketch.yaml" ]; then \
@@ -40,3 +43,6 @@ require-port:
 		echo "PORT is required for upload."; \
 		exit 1; \
 	fi
+
+%:
+	@:

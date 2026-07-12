@@ -19,13 +19,13 @@ make list-apps
 ## ビルド
 
 ```sh
-make compile APP=HelloWorldM5Paper
+make compile HelloWorldM5Paper
 ```
 
 秘密情報が必要なアプリでは、先に `.env.example` から `.env` を作ります。
 
 ```sh
-cp apps/TRHCheckerM5Paper/.env.example apps/TRHCheckerM5Paper/.env
+cp apps/WIFICheckerM5Paper/.env.example apps/WIFICheckerM5Paper/.env
 ```
 
 `.env` がある場合、`make compile` は `secrets.h` を自動生成してからビルドします。
@@ -41,7 +41,7 @@ arduino-cli board list
 `PORT` を指定して書き込みます。
 
 ```sh
-make upload APP=TRHCheckerM5Paper PORT=/dev/cu.usbserial-02142314
+make upload WIFICheckerM5Paper PORT=/dev/cu.usbserial-02142314
 ```
 
 ## 注意点
