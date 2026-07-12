@@ -1,4 +1,4 @@
 build_cache:
     path: .arduino/build-cache
 directories:
-    user: Arduino
+    user: .arduino/user
