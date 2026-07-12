@@ -1,5 +1,5 @@
 profiles:
-  m5stack_paper:
+  default:
     fqbn: esp32:esp32:m5stack_paper
     platforms:
       - platform: esp32:esp32 (3.3.10)

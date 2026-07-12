@@ -1,6 +1,6 @@
 ARDUINO_CLI := arduino-cli
 ARDUINO_CONFIG := arduino-cli.yaml
-PROFILE ?= m5stack_paper
+PROFILE ?= default
 APPS_DIR := apps
 APP_DIR := $(APPS_DIR)/$(APP)
 

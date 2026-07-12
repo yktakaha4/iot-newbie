@@ -45,11 +45,11 @@ IoT デバイス向けの Arduino CLI プロジェクト集です。コーディ
 
 Arduino CLI の sketch profile を使います。依存を追加・更新する場合は、ライブラリ本体をコミットせず、対象スケッチの `sketch.yaml` を更新してください。
 
-`HelloWorldM5Paper` の現在のプロファイル:
+`HelloWorldM5Paper` の現在のデフォルトプロファイル:
 
 ```yaml
 profiles:
-  m5stack_paper:
+  default:
     fqbn: esp32:esp32:m5stack_paper
     platforms:
       - platform: esp32:esp32 (3.3.10)
