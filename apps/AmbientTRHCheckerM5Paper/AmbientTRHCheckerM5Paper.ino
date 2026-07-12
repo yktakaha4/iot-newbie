@@ -18,6 +18,7 @@ constexpr uint32_t kMeasureDelayMs = 20;
 namespace Network {
 constexpr uint32_t kWifiConnectTimeoutMs = 15000;
 constexpr uint32_t kAmbientTimeoutMs = 5000;
+constexpr uint32_t kAmbientSendIntervalMs = 60000;
 }  // namespace Network
 
 namespace Display {
@@ -40,9 +41,10 @@ constexpr int32_t kColWifi = 332;
 constexpr int32_t kColAmbient = 420;
 constexpr int32_t kTableRight = 526;
 constexpr int32_t kStatusY = 830;
-constexpr int32_t kButtonX = 76;
+constexpr int32_t kWifiButtonX = 28;
+constexpr int32_t kSendButtonX = 280;
 constexpr int32_t kButtonY = 874;
-constexpr int32_t kButtonW = 388;
+constexpr int32_t kButtonW = 232;
 constexpr int32_t kButtonH = 64;
 }  // namespace Display
 
@@ -77,9 +79,11 @@ struct AmbientState {
 struct AppState {
   uint32_t lastSensorReadMs = 0;
   uint32_t lastDisplayRefreshMs = 0;
+  uint32_t lastAmbientSendMs = 0;
   uint32_t sampleCount = 0;
   size_t nextDisplayRow = 0;
   bool hasPendingReading = false;
+  bool ambientSendingEnabled = true;
   Reading latestReading;
 };
 
@@ -159,20 +163,19 @@ void formatTime(const m5::rtc_time_t& time, char* buffer, size_t length) {
   snprintf(buffer, length, "%02d:%02d:%02d", time.hours, time.minutes, time.seconds);
 }
 
-bool isReconnectButtonClicked() {
-  const auto detail = M5.Touch.getDetail();
+bool isButtonClicked(const m5::touch_detail_t& detail, int32_t x, int32_t y, int32_t w, int32_t h) {
   return detail.wasClicked() &&
-         detail.x >= Display::kButtonX && detail.x < Display::kButtonX + Display::kButtonW &&
-         detail.y >= Display::kButtonY && detail.y < Display::kButtonY + Display::kButtonH;
+         detail.x >= x && detail.x < x + w &&
+         detail.y >= y && detail.y < y + h;
 }
 
-void drawButton(const char* label) {
-  M5.Display.fillRect(Display::kButtonX - 2,
+void drawButton(int32_t x, const char* label) {
+  M5.Display.fillRect(x - 2,
                       Display::kButtonY - 2,
                       Display::kButtonW + 4,
                       Display::kButtonH + 4,
                       TFT_WHITE);
-  M5.Display.drawRoundRect(Display::kButtonX,
+  M5.Display.drawRoundRect(x,
                            Display::kButtonY,
                            Display::kButtonW,
                            Display::kButtonH,
@@ -181,9 +184,14 @@ void drawButton(const char* label) {
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextSize(3);
   M5.Display.drawString(label,
-                        Display::kButtonX + Display::kButtonW / 2,
+                        x + Display::kButtonW / 2,
                         Display::kButtonY + Display::kButtonH / 2);
   M5.Display.setTextDatum(top_left);
+}
+
+void drawButtons(const char* wifiLabel) {
+  drawButton(Display::kWifiButtonX, wifiLabel);
+  drawButton(Display::kSendButtonX, appState.ambientSendingEnabled ? "Send ON" : "Send OFF");
 }
 
 void drawWifiStatus() {
@@ -269,15 +277,17 @@ void drawStaticFrame() {
                       Display::kTableTop + 30,
                       TFT_BLACK);
   drawWifiStatus();
-  drawButton("Reconnect WiFi");
+  drawButtons("Reconnect");
 }
 
 void drawStatus() {
-  char statusText[80];
+  char statusText[96];
   snprintf(statusText,
            sizeof(statusText),
-           "Read every %lus / Samples %lu",
+           "Read %lus / Send %s %lus / Samples %lu",
            static_cast<unsigned long>(Sensor::kReadIntervalMs / 1000),
+           appState.ambientSendingEnabled ? "ON" : "OFF",
+           static_cast<unsigned long>(Network::kAmbientSendIntervalMs / 1000),
            static_cast<unsigned long>(appState.sampleCount));
   M5.Display.fillRect(Display::kMarginX,
                       Display::kStatusY,
@@ -374,11 +384,11 @@ void refreshDisplay() {
 
 void refreshWifiUi(const char* buttonLabel) {
   drawWifiStatus();
-  drawButton(buttonLabel);
+  drawButtons(buttonLabel);
   M5.Display.display(Display::kMarginX, Display::kWifiStatusY, Display::kTableRight - Display::kMarginX, 34);
-  M5.Display.display(Display::kButtonX - 2,
+  M5.Display.display(Display::kWifiButtonX - 2,
                      Display::kButtonY - 2,
-                     Display::kButtonW + 4,
+                     Display::kSendButtonX + Display::kButtonW - Display::kWifiButtonX + 4,
                      Display::kButtonH + 4);
 }
 
@@ -404,7 +414,7 @@ wl_status_t connectWifi(uint32_t& elapsedMs, bool& timedOut) {
   wifiState.lastStatus = status;
   wifiState.lastElapsedMs = elapsedMs;
   wifiState.lastTimedOut = timedOut;
-  refreshWifiUi("Reconnect WiFi");
+  refreshWifiUi("Reconnect");
 
   return status;
 }
@@ -456,24 +466,40 @@ void logReadingToSerial(const Reading& reading) {
   Serial.println();
 }
 
-Reading takeReading() {
+Reading takeReading(bool shouldSendAmbient) {
   Reading reading;
   M5.Rtc.getDateTime(&reading.datetime);
   reading.sensorOk = readSht30(reading.temperatureC, reading.humidityPercent);
   reading.wifiOk = WiFi.status() == WL_CONNECTED;
 
-  if (reading.sensorOk) {
+  if (reading.sensorOk && shouldSendAmbient) {
     reading.ambient = sendAmbient(reading.temperatureC, reading.humidityPercent);
   }
 
   return reading;
 }
 
-void sampleAndSend() {
-  appState.latestReading = takeReading();
+void sampleAndSend(uint32_t now) {
+  const bool shouldSendAmbient = appState.ambientSendingEnabled &&
+                                 now - appState.lastAmbientSendMs >= Network::kAmbientSendIntervalMs;
+  appState.latestReading = takeReading(shouldSendAmbient);
+  if (shouldSendAmbient) {
+    appState.lastAmbientSendMs = now;
+  }
   appState.hasPendingReading = true;
   ++appState.sampleCount;
   logReadingToSerial(appState.latestReading);
+}
+
+void toggleAmbientSending() {
+  appState.ambientSendingEnabled = !appState.ambientSendingEnabled;
+  drawButtons("Reconnect");
+  drawStatus();
+  M5.Display.display(Display::kSendButtonX - 2,
+                     Display::kButtonY - 2,
+                     Display::kButtonW + 4,
+                     Display::kButtonH + 4);
+  M5.Display.display(Display::kMarginX, Display::kStatusY, Display::kTableRight - Display::kMarginX, 40);
 }
 
 void initializeDisplay() {
@@ -505,7 +531,9 @@ void setup() {
   initializeDisplay();
   connectWifi(wifiState.lastElapsedMs, wifiState.lastTimedOut);
   initializeAmbient();
-  sampleAndSend();
+  const uint32_t now = millis();
+  appState.lastAmbientSendMs = now - Network::kAmbientSendIntervalMs;
+  sampleAndSend(now);
   refreshDisplay();
   recordLoopTimestamps(millis());
 }
@@ -513,14 +541,27 @@ void setup() {
 void loop() {
   M5.update();
 
-  if (!wifiState.connecting && isReconnectButtonClicked()) {
-    connectWifi(wifiState.lastElapsedMs, wifiState.lastTimedOut);
+  const auto touch = M5.Touch.getDetail();
+  if (!wifiState.connecting) {
+    if (isButtonClicked(touch,
+                        Display::kWifiButtonX,
+                        Display::kButtonY,
+                        Display::kButtonW,
+                        Display::kButtonH)) {
+      connectWifi(wifiState.lastElapsedMs, wifiState.lastTimedOut);
+    } else if (isButtonClicked(touch,
+                               Display::kSendButtonX,
+                               Display::kButtonY,
+                               Display::kButtonW,
+                               Display::kButtonH)) {
+      toggleAmbientSending();
+    }
   }
 
   const uint32_t now = millis();
   if (now - appState.lastSensorReadMs >= Sensor::kReadIntervalMs) {
     appState.lastSensorReadMs = now;
-    sampleAndSend();
+    sampleAndSend(now);
   }
   if (now - appState.lastDisplayRefreshMs >= Display::kRefreshIntervalMs) {
     appState.lastDisplayRefreshMs = now;
