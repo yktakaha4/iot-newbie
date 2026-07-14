@@ -7,3 +7,4 @@ profiles:
     libraries:
       - M5Unified (0.2.18)
       - M5GFX (0.2.25)
+      - Ambient ESP32 ESP8266 lib (1.0.5)

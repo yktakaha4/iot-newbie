@@ -1,5 +1,8 @@
+#include <Ambient.h>
 #include <M5Unified.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -23,6 +26,8 @@ constexpr long kJstOffsetSec = 9 * 60 * 60;
 constexpr int kDaylightOffsetSec = 0;
 constexpr uint32_t kWifiConnectTimeoutMs = 15000;
 constexpr uint32_t kNtpTimeoutMs = 15000;
+constexpr uint32_t kAmbientTimeoutMs = 5000;
+constexpr uint32_t kAmbientSendIntervalMs = 60000;
 constexpr int kMinimumValidYear = 2024;
 constexpr const char* kNtpServer1 = "ntp.nict.jp";
 constexpr const char* kNtpServer2 = "ntp.jst.mfeed.ad.jp";
@@ -32,18 +37,20 @@ namespace Display {
 constexpr uint32_t kRefreshIntervalMs = 1000;
 constexpr int32_t kMarginX = 18;
 constexpr int32_t kTitleY = 22;
-constexpr int32_t kHeaderStatsY = 66;
-constexpr int32_t kHeaderPumpY = 150;
-constexpr int32_t kHeaderStatusY = 174;
-constexpr int32_t kHeaderBottom = 210;
-constexpr int32_t kTableTop = 236;
+constexpr int32_t kHeaderIdentityY = 58;
+constexpr int32_t kHeaderStatsY = 90;
+constexpr int32_t kHeaderPumpY = 174;
+constexpr int32_t kHeaderStatusY = 198;
+constexpr int32_t kHeaderBottom = 232;
+constexpr int32_t kTableTop = 254;
 constexpr int32_t kRowsTop = kTableTop + 42;
 constexpr int32_t kRowHeight = 48;
-constexpr size_t kVisibleRows = 11;
+constexpr size_t kVisibleRows = 10;
 constexpr int32_t kColTime = 18;
-constexpr int32_t kColMoist = 160;
-constexpr int32_t kColTemp = 300;
-constexpr int32_t kColHum = 420;
+constexpr int32_t kColMoist = 124;
+constexpr int32_t kColTemp = 230;
+constexpr int32_t kColHum = 326;
+constexpr int32_t kColAmbient = 426;
 constexpr int32_t kTableRight = 526;
 constexpr int32_t kPumpButtonX = 28;
 constexpr int32_t kWifiButtonX = 280;
@@ -72,11 +79,21 @@ struct LogEntry {
   bool environmentOk = false;
   float temperatureC = 0.0f;
   float humidityPercent = 0.0f;
+  bool ambientAttempted = false;
+  bool ambientOk = false;
+  int ambientHttpCode = 0;
+};
+
+struct AmbientResult {
+  bool attempted = false;
+  bool ok = false;
+  int httpCode = 0;
 };
 
 struct AppState {
   uint32_t lastSensorReadMs = 0;
   uint32_t lastDisplayRefreshMs = 0;
+  uint32_t lastAmbientSendMs = 0;
   uint32_t pumpStartedMs = 0;
   uint32_t sampleCount = 0;
   size_t nextDisplayRow = 0;
@@ -85,6 +102,7 @@ struct AppState {
   bool headerDirty = false;
   bool wifiOk = false;
   bool ntpOk = false;
+  bool ambientReady = false;
   uint32_t wifiElapsedMs = 0;
   uint32_t ntpElapsedMs = 0;
   uint32_t pumpCount = 0;
@@ -103,6 +121,8 @@ struct AppState {
 };
 
 AppState appState;
+WiFiClient ambientClient;
+Ambient ambientSender;
 
 float moistToAdcPercent(uint16_t moist) {
   return static_cast<float>(moist) * 100.0f / static_cast<float>(Sensor::kAdcMax);
@@ -214,6 +234,15 @@ void drawHeader() {
   M5.Display.setTextSize(3);
   M5.Display.drawString("Watering Unit Checker", Display::kMarginX, Display::kTitleY);
 
+  M5.Display.setTextSize(2);
+  char identityText[128];
+  snprintf(identityText,
+           sizeof(identityText),
+           "SSID: %s / Ambient Ch: %s",
+           WIFI_SSID,
+           AMBIENT_CHANNEL_ID);
+  M5.Display.drawString(identityText, Display::kMarginX, Display::kHeaderIdentityY);
+
   char moistText[64];
   if (appState.latestReading.sample == 0) {
     snprintf(moistText, sizeof(moistText), "Moist min/max: - / -");
@@ -243,7 +272,6 @@ void drawHeader() {
     snprintf(humText, sizeof(humText), "Hum min/max: - / -");
   }
 
-  M5.Display.setTextSize(2);
   M5.Display.drawString(moistText, Display::kMarginX, Display::kHeaderStatsY);
   M5.Display.drawString(tempText, Display::kMarginX, Display::kHeaderStatsY + 28);
   M5.Display.drawString(humText, Display::kMarginX, Display::kHeaderStatsY + 56);
@@ -299,6 +327,7 @@ void drawStaticFrame() {
   M5.Display.drawString("Moist", Display::kColMoist, Display::kTableTop);
   M5.Display.drawString("Temp", Display::kColTemp, Display::kTableTop);
   M5.Display.drawString("Hum", Display::kColHum, Display::kTableTop);
+  M5.Display.drawString("Amb", Display::kColAmbient, Display::kTableTop);
   M5.Display.drawLine(Display::kMarginX,
                       Display::kTableTop + 30,
                       Display::kTableRight,
@@ -327,6 +356,7 @@ void drawLogRow(size_t row, const LogEntry& entry) {
     char moistText[16];
     char tempText[16];
     char humText[16];
+    char ambientText[16];
     snprintf(moistText, sizeof(moistText), "%u", entry.moist);
     if (entry.environmentOk) {
       snprintf(tempText, sizeof(tempText), "%.1fC", entry.temperatureC);
@@ -335,10 +365,16 @@ void drawLogRow(size_t row, const LogEntry& entry) {
       snprintf(tempText, sizeof(tempText), "ERR");
       snprintf(humText, sizeof(humText), "ERR");
     }
+    if (entry.ambientAttempted) {
+      snprintf(ambientText, sizeof(ambientText), entry.ambientOk ? "OK" : "NG");
+    } else {
+      snprintf(ambientText, sizeof(ambientText), "SKIP");
+    }
 
     M5.Display.drawString(moistText, Display::kColMoist, y);
     M5.Display.drawString(tempText, Display::kColTemp, y);
     M5.Display.drawString(humText, Display::kColHum, y);
+    M5.Display.drawString(ambientText, Display::kColAmbient, y);
   } else {
     M5.Display.drawString("PUMP ON", Display::kColMoist, y);
   }
@@ -375,7 +411,40 @@ LogEntry makeEventLog(LogKind kind) {
   return entry;
 }
 
-void readMoisture() {
+void initializeAmbient() {
+  appState.ambientReady = ambientSender.begin(static_cast<unsigned int>(atoi(AMBIENT_CHANNEL_ID)),
+                                              AMBIENT_WRITE_KEY,
+                                              &ambientClient);
+  Serial.printf("Ambient: %s channel=%s\n", appState.ambientReady ? "READY" : "NG", AMBIENT_CHANNEL_ID);
+}
+
+AmbientResult sendAmbient(const LogEntry& reading) {
+  AmbientResult result;
+
+  if (!reading.environmentOk) {
+    result.httpCode = -4;
+    return result;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    result.httpCode = -1;
+    return result;
+  }
+  if (!appState.ambientReady) {
+    result.httpCode = -3;
+    return result;
+  }
+
+  result.attempted = true;
+  ambientSender.set(1, static_cast<double>(reading.moist));
+  ambientSender.set(2, static_cast<double>(reading.temperatureC));
+  ambientSender.set(3, static_cast<double>(reading.humidityPercent));
+  const bool sent = ambientSender.send(Network::kAmbientTimeoutMs);
+  result.httpCode = ambientSender.status;
+  result.ok = sent && result.httpCode >= 200 && result.httpCode < 300;
+  return result;
+}
+
+void readMoisture(uint32_t now) {
   ++appState.sampleCount;
   LogEntry reading;
   reading.kind = LogKind::Reading;
@@ -413,11 +482,22 @@ void readMoisture() {
     }
   }
 
-  appState.latestReading = reading;
-  queueLogEntry(reading);
   if (moistStatsChanged || environmentStatsChanged) {
     appState.headerDirty = true;
   }
+
+  const bool shouldSendAmbient = now - appState.lastAmbientSendMs >= Network::kAmbientSendIntervalMs;
+  AmbientResult ambient;
+  if (shouldSendAmbient) {
+    ambient = sendAmbient(reading);
+    appState.lastAmbientSendMs = now;
+  }
+  reading.ambientAttempted = ambient.attempted;
+  reading.ambientOk = ambient.ok;
+  reading.ambientHttpCode = ambient.httpCode;
+
+  appState.latestReading = reading;
+  queueLogEntry(reading);
 
   char timeText[24];
   if (reading.timeOk) {
@@ -439,6 +519,11 @@ void readMoisture() {
                 reading.environmentOk ? "OK" : "ERR");
   if (reading.environmentOk) {
     Serial.printf(" temp_c=%.2f humidity_percent=%.2f", reading.temperatureC, reading.humidityPercent);
+  }
+  if (reading.ambientAttempted) {
+    Serial.printf(" ambient=%s http=%d", reading.ambientOk ? "OK" : "NG", reading.ambientHttpCode);
+  } else {
+    Serial.printf(" ambient=SKIP%s", shouldSendAmbient ? " blocked" : "");
   }
   Serial.printf(" pump=%s\n", appState.pumpRunning ? "ON" : "OFF");
 }
@@ -644,6 +729,7 @@ void syncTimeFromNtp() {
 void reconnectWifiAndSyncTime() {
   connectWifi();
   syncTimeFromNtp();
+  initializeAmbient();
   refreshHeaderAndButtons();
 }
 }  // namespace
@@ -661,11 +747,13 @@ void setup() {
   initializeDisplay();
   connectWifi();
   syncTimeFromNtp();
+  initializeAmbient();
   refreshHeaderAndButtons();
-  readMoisture();
+  const uint32_t now = millis();
+  appState.lastAmbientSendMs = now - Network::kAmbientSendIntervalMs;
+  readMoisture(now);
   refreshDisplay();
 
-  const uint32_t now = millis();
   appState.lastSensorReadMs = now;
   appState.lastDisplayRefreshMs = now;
 }
@@ -693,7 +781,7 @@ void loop() {
 
   if (now - appState.lastSensorReadMs >= Sensor::kReadIntervalMs) {
     appState.lastSensorReadMs = now;
-    readMoisture();
+    readMoisture(now);
   }
 
   if (now - appState.lastDisplayRefreshMs >= Display::kRefreshIntervalMs) {
