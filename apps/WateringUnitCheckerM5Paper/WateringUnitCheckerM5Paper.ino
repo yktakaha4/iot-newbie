@@ -14,8 +14,6 @@ constexpr uint32_t kI2cFrequency = 400000;
 constexpr uint32_t kReadIntervalMs = 10000;
 constexpr uint32_t kPumpRunMs = 5000;
 constexpr uint16_t kAdcMax = 4095;
-constexpr uint16_t kWetRaw = 1600;
-constexpr uint16_t kDryRaw = 2000;
 constexpr uint8_t kMeasureCommand[] = {0x24, 0x00};
 constexpr uint32_t kMeasureDelayMs = 20;
 }  // namespace Sensor
@@ -35,36 +33,42 @@ constexpr uint32_t kRefreshIntervalMs = 1000;
 constexpr int32_t kMarginX = 18;
 constexpr int32_t kTitleY = 22;
 constexpr int32_t kHeaderStatsY = 66;
-constexpr int32_t kHeaderStatusY = 150;
-constexpr int32_t kHeaderBottom = 188;
-constexpr int32_t kTableTop = 216;
+constexpr int32_t kHeaderPumpY = 150;
+constexpr int32_t kHeaderStatusY = 174;
+constexpr int32_t kHeaderBottom = 210;
+constexpr int32_t kTableTop = 236;
 constexpr int32_t kRowsTop = kTableTop + 42;
 constexpr int32_t kRowHeight = 48;
-constexpr size_t kVisibleRows = 12;
+constexpr size_t kVisibleRows = 11;
 constexpr int32_t kColTime = 18;
-constexpr int32_t kColRaw = 136;
-constexpr int32_t kColPercent = 236;
-constexpr int32_t kColTemp = 340;
-constexpr int32_t kColHum = 438;
+constexpr int32_t kColMoist = 160;
+constexpr int32_t kColTemp = 300;
+constexpr int32_t kColHum = 420;
 constexpr int32_t kTableRight = 526;
 constexpr int32_t kPumpButtonX = 28;
 constexpr int32_t kWifiButtonX = 280;
 constexpr int32_t kButtonY = 842;
 constexpr int32_t kButtonW = 232;
 constexpr int32_t kButtonH = 78;
+constexpr size_t kLogQueueSize = 8;
 }  // namespace Display
 
-struct Reading {
+enum class LogKind {
+  Reading,
+  PumpStarted,
+};
+
+struct LogEntry {
+  LogKind kind = LogKind::Reading;
   uint32_t sample = 0;
   uint32_t elapsedSec = 0;
   bool timeOk = false;
   m5::rtc_datetime_t datetime;
-  uint16_t raw = 0;
+  uint16_t moist = 0;
   uint32_t millivolts = 0;
-  uint16_t minRaw = Sensor::kAdcMax;
-  uint16_t maxRaw = 0;
-  float adcPercent = 0.0f;
-  float moisturePercent = 0.0f;
+  uint16_t minMoist = Sensor::kAdcMax;
+  uint16_t maxMoist = 0;
+  float moistAdcPercent = 0.0f;
   bool environmentOk = false;
   float temperatureC = 0.0f;
   float humidityPercent = 0.0f;
@@ -77,39 +81,47 @@ struct AppState {
   uint32_t sampleCount = 0;
   size_t nextDisplayRow = 0;
   bool pumpRunning = false;
-  bool hasPendingReading = false;
   bool pumpUiDirty = false;
   bool headerDirty = false;
   bool wifiOk = false;
   bool ntpOk = false;
   uint32_t wifiElapsedMs = 0;
   uint32_t ntpElapsedMs = 0;
+  uint32_t pumpCount = 0;
+  bool hasLastPumpTime = false;
+  m5::rtc_datetime_t lastPumpDateTime;
+  uint32_t lastPumpElapsedSec = 0;
   bool hasEnvironmentStats = false;
   float minTemperatureC = 0.0f;
   float maxTemperatureC = 0.0f;
   float minHumidityPercent = 0.0f;
   float maxHumidityPercent = 0.0f;
-  Reading latestReading;
+  LogEntry latestReading;
+  LogEntry logQueue[Display::kLogQueueSize];
+  size_t logQueueHead = 0;
+  size_t logQueueCount = 0;
 };
 
 AppState appState;
 
-float rawToAdcPercent(uint16_t raw) {
-  return static_cast<float>(raw) * 100.0f / static_cast<float>(Sensor::kAdcMax);
-}
-
-float rawToMoisturePercent(uint16_t raw) {
-  if (Sensor::kDryRaw == Sensor::kWetRaw) {
-    return 0.0f;
-  }
-
-  const float percent = (static_cast<float>(Sensor::kDryRaw) - static_cast<float>(raw)) * 100.0f /
-                        (static_cast<float>(Sensor::kDryRaw) - static_cast<float>(Sensor::kWetRaw));
-  return constrain(percent, 0.0f, 100.0f);
+float moistToAdcPercent(uint16_t moist) {
+  return static_cast<float>(moist) * 100.0f / static_cast<float>(Sensor::kAdcMax);
 }
 
 void formatTime(const m5::rtc_time_t& time, char* buffer, size_t length) {
   snprintf(buffer, length, "%02d:%02d:%02d", time.hours, time.minutes, time.seconds);
+}
+
+void formatLogTime(bool timeOk,
+                   const m5::rtc_datetime_t& datetime,
+                   uint32_t elapsedSec,
+                   char* buffer,
+                   size_t length) {
+  if (timeOk) {
+    formatTime(datetime.time, buffer, length);
+  } else {
+    snprintf(buffer, length, "%lus", static_cast<unsigned long>(elapsedSec));
+  }
 }
 
 bool isValidNtpTime(const tm& timeinfo) {
@@ -202,15 +214,15 @@ void drawHeader() {
   M5.Display.setTextSize(3);
   M5.Display.drawString("Watering Unit Checker", Display::kMarginX, Display::kTitleY);
 
-  char rawText[64];
+  char moistText[64];
   if (appState.latestReading.sample == 0) {
-    snprintf(rawText, sizeof(rawText), "Raw min/max: - / -");
+    snprintf(moistText, sizeof(moistText), "Moist min/max: - / -");
   } else {
-    snprintf(rawText,
-             sizeof(rawText),
-             "Raw min/max: %u / %u",
-             appState.latestReading.minRaw,
-             appState.latestReading.maxRaw);
+    snprintf(moistText,
+             sizeof(moistText),
+             "Moist min/max: %u / %u",
+             appState.latestReading.minMoist,
+             appState.latestReading.maxMoist);
   }
 
   char tempText[80];
@@ -232,9 +244,28 @@ void drawHeader() {
   }
 
   M5.Display.setTextSize(2);
-  M5.Display.drawString(rawText, Display::kMarginX, Display::kHeaderStatsY);
+  M5.Display.drawString(moistText, Display::kMarginX, Display::kHeaderStatsY);
   M5.Display.drawString(tempText, Display::kMarginX, Display::kHeaderStatsY + 28);
   M5.Display.drawString(humText, Display::kMarginX, Display::kHeaderStatsY + 56);
+
+  char lastPumpTimeText[24];
+  if (appState.hasLastPumpTime) {
+    formatLogTime(true,
+                  appState.lastPumpDateTime,
+                  appState.lastPumpElapsedSec,
+                  lastPumpTimeText,
+                  sizeof(lastPumpTimeText));
+  } else {
+    snprintf(lastPumpTimeText, sizeof(lastPumpTimeText), "-");
+  }
+
+  char pumpSummaryText[96];
+  snprintf(pumpSummaryText,
+           sizeof(pumpSummaryText),
+           "Last pump: %s / Count: %lu",
+           lastPumpTimeText,
+           static_cast<unsigned long>(appState.pumpCount));
+  M5.Display.drawString(pumpSummaryText, Display::kMarginX, Display::kHeaderPumpY);
 
   char statusText[128];
   if (appState.pumpRunning) {
@@ -265,8 +296,7 @@ void drawStaticFrame() {
   drawHeader();
 
   M5.Display.drawString("Time", Display::kColTime, Display::kTableTop);
-  M5.Display.drawString("Raw", Display::kColRaw, Display::kTableTop);
-  M5.Display.drawString("Moist", Display::kColPercent, Display::kTableTop);
+  M5.Display.drawString("Moist", Display::kColMoist, Display::kTableTop);
   M5.Display.drawString("Temp", Display::kColTemp, Display::kTableTop);
   M5.Display.drawString("Hum", Display::kColHum, Display::kTableTop);
   M5.Display.drawLine(Display::kMarginX,
@@ -283,54 +313,86 @@ void clearRows() {
   appState.nextDisplayRow = 0;
 }
 
-void drawReadingRow(size_t row, const Reading& reading) {
+void drawLogRow(size_t row, const LogEntry& entry) {
   const int32_t y = Display::kRowsTop + static_cast<int32_t>(row) * Display::kRowHeight;
   M5.Display.fillRect(0, y, M5.Display.width(), Display::kRowHeight, TFT_WHITE);
   M5.Display.setTextDatum(top_left);
   M5.Display.setTextSize(2);
 
   char timeText[24];
-  char rawText[16];
-  char percentText[16];
-  char tempText[16];
-  char humText[16];
-  if (reading.timeOk) {
-    formatTime(reading.datetime.time, timeText, sizeof(timeText));
+  formatLogTime(entry.timeOk, entry.datetime, entry.elapsedSec, timeText, sizeof(timeText));
+  M5.Display.drawString(timeText, Display::kColTime, y);
+
+  if (entry.kind == LogKind::Reading) {
+    char moistText[16];
+    char tempText[16];
+    char humText[16];
+    snprintf(moistText, sizeof(moistText), "%u", entry.moist);
+    if (entry.environmentOk) {
+      snprintf(tempText, sizeof(tempText), "%.1fC", entry.temperatureC);
+      snprintf(humText, sizeof(humText), "%.1f%%", entry.humidityPercent);
+    } else {
+      snprintf(tempText, sizeof(tempText), "ERR");
+      snprintf(humText, sizeof(humText), "ERR");
+    }
+
+    M5.Display.drawString(moistText, Display::kColMoist, y);
+    M5.Display.drawString(tempText, Display::kColTemp, y);
+    M5.Display.drawString(humText, Display::kColHum, y);
   } else {
-    snprintf(timeText, sizeof(timeText), "%lus", static_cast<unsigned long>(reading.elapsedSec));
-  }
-  snprintf(rawText, sizeof(rawText), "%u", reading.raw);
-  snprintf(percentText, sizeof(percentText), "%.1f%%", reading.moisturePercent);
-  if (reading.environmentOk) {
-    snprintf(tempText, sizeof(tempText), "%.1fC", reading.temperatureC);
-    snprintf(humText, sizeof(humText), "%.1f%%", reading.humidityPercent);
-  } else {
-    snprintf(tempText, sizeof(tempText), "ERR");
-    snprintf(humText, sizeof(humText), "ERR");
+    M5.Display.drawString("PUMP ON", Display::kColMoist, y);
   }
 
-  M5.Display.drawString(timeText, Display::kColTime, y);
-  M5.Display.drawString(rawText, Display::kColRaw, y);
-  M5.Display.drawString(percentText, Display::kColPercent, y);
-  M5.Display.drawString(tempText, Display::kColTemp, y);
-  M5.Display.drawString(humText, Display::kColHum, y);
   M5.Display.drawLine(Display::kMarginX, y + 34, Display::kTableRight, y + 34, TFT_BLACK);
+}
+
+void queueLogEntry(const LogEntry& entry) {
+  const size_t index = (appState.logQueueHead + appState.logQueueCount) % Display::kLogQueueSize;
+  appState.logQueue[index] = entry;
+  if (appState.logQueueCount < Display::kLogQueueSize) {
+    ++appState.logQueueCount;
+  } else {
+    appState.logQueueHead = (appState.logQueueHead + 1) % Display::kLogQueueSize;
+  }
+}
+
+bool popLogEntry(LogEntry& entry) {
+  if (appState.logQueueCount == 0) {
+    return false;
+  }
+
+  entry = appState.logQueue[appState.logQueueHead];
+  appState.logQueueHead = (appState.logQueueHead + 1) % Display::kLogQueueSize;
+  --appState.logQueueCount;
+  return true;
+}
+
+LogEntry makeEventLog(LogKind kind) {
+  LogEntry entry;
+  entry.kind = kind;
+  entry.elapsedSec = millis() / 1000;
+  entry.timeOk = appState.ntpOk && M5.Rtc.getDateTime(&entry.datetime);
+  return entry;
 }
 
 void readMoisture() {
   ++appState.sampleCount;
-  Reading reading;
+  LogEntry reading;
+  reading.kind = LogKind::Reading;
   reading.sample = appState.sampleCount;
   reading.elapsedSec = millis() / 1000;
   reading.timeOk = appState.ntpOk && M5.Rtc.getDateTime(&reading.datetime);
-  reading.raw = static_cast<uint16_t>(analogRead(Sensor::kMoisturePin));
+  reading.moist = static_cast<uint16_t>(analogRead(Sensor::kMoisturePin));
   reading.millivolts = analogReadMilliVolts(Sensor::kMoisturePin);
   reading.environmentOk = readSht30(reading.temperatureC, reading.humidityPercent);
-  reading.minRaw = appState.latestReading.sample == 0 ? reading.raw : min(appState.latestReading.minRaw, reading.raw);
-  reading.maxRaw = appState.latestReading.sample == 0 ? reading.raw : max(appState.latestReading.maxRaw, reading.raw);
-  reading.adcPercent = rawToAdcPercent(reading.raw);
-  reading.moisturePercent = rawToMoisturePercent(reading.raw);
+  const bool moistStatsChanged = appState.latestReading.sample == 0 ||
+                               reading.moist < appState.latestReading.minMoist ||
+                               reading.moist > appState.latestReading.maxMoist;
+  reading.minMoist = appState.latestReading.sample == 0 ? reading.moist : min(appState.latestReading.minMoist, reading.moist);
+  reading.maxMoist = appState.latestReading.sample == 0 ? reading.moist : max(appState.latestReading.maxMoist, reading.moist);
+  reading.moistAdcPercent = moistToAdcPercent(reading.moist);
 
+  bool environmentStatsChanged = false;
   if (reading.environmentOk) {
     if (!appState.hasEnvironmentStats) {
       appState.minTemperatureC = reading.temperatureC;
@@ -338,7 +400,12 @@ void readMoisture() {
       appState.minHumidityPercent = reading.humidityPercent;
       appState.maxHumidityPercent = reading.humidityPercent;
       appState.hasEnvironmentStats = true;
+      environmentStatsChanged = true;
     } else {
+      environmentStatsChanged = reading.temperatureC < appState.minTemperatureC ||
+                                reading.temperatureC > appState.maxTemperatureC ||
+                                reading.humidityPercent < appState.minHumidityPercent ||
+                                reading.humidityPercent > appState.maxHumidityPercent;
       appState.minTemperatureC = min(appState.minTemperatureC, reading.temperatureC);
       appState.maxTemperatureC = max(appState.maxTemperatureC, reading.temperatureC);
       appState.minHumidityPercent = min(appState.minHumidityPercent, reading.humidityPercent);
@@ -347,8 +414,10 @@ void readMoisture() {
   }
 
   appState.latestReading = reading;
-  appState.hasPendingReading = true;
-  appState.headerDirty = true;
+  queueLogEntry(reading);
+  if (moistStatsChanged || environmentStatsChanged) {
+    appState.headerDirty = true;
+  }
 
   char timeText[24];
   if (reading.timeOk) {
@@ -357,17 +426,16 @@ void readMoisture() {
     snprintf(timeText, sizeof(timeText), "%lus", static_cast<unsigned long>(reading.elapsedSec));
   }
 
-  Serial.printf("[sample %lu] time=%s elapsed=%lus moisture_raw=%u moisture_mv=%lu moisture_percent=%.1f adc_percent=%.1f min_raw=%u max_raw=%u%s env=%s",
+  Serial.printf("[sample %lu] time=%s elapsed=%lus moist=%u moist_mv=%lu adc_percent=%.1f min_moist=%u max_moist=%u%s env=%s",
                 static_cast<unsigned long>(reading.sample),
                 timeText,
                 static_cast<unsigned long>(reading.elapsedSec),
-                reading.raw,
+                reading.moist,
                 static_cast<unsigned long>(reading.millivolts),
-                reading.moisturePercent,
-                reading.adcPercent,
-                reading.minRaw,
-                reading.maxRaw,
-                reading.raw >= 4090 ? " saturated" : "",
+                reading.moistAdcPercent,
+                reading.minMoist,
+                reading.maxMoist,
+                reading.moist >= 4090 ? " saturated" : "",
                 reading.environmentOk ? "OK" : "ERR");
   if (reading.environmentOk) {
     Serial.printf(" temp_c=%.2f humidity_percent=%.2f", reading.temperatureC, reading.humidityPercent);
@@ -381,44 +449,74 @@ void refreshDisplay() {
   }
 
   bool updated = false;
+  bool headerUpdated = false;
+  bool buttonsUpdated = false;
   bool wrapped = false;
 
-  if (appState.hasPendingReading) {
+  LogEntry entry;
+  int32_t firstUpdatedRowY = -1;
+  int32_t lastUpdatedRowY = -1;
+  while (popLogEntry(entry)) {
     if (appState.nextDisplayRow >= Display::kVisibleRows) {
       clearRows();
       wrapped = true;
     }
 
-    drawHeader();
-    drawReadingRow(appState.nextDisplayRow, appState.latestReading);
+    const int32_t rowY = Display::kRowsTop + static_cast<int32_t>(appState.nextDisplayRow) * Display::kRowHeight;
+    drawLogRow(appState.nextDisplayRow, entry);
+    if (firstUpdatedRowY < 0) {
+      firstUpdatedRowY = rowY;
+    }
+    lastUpdatedRowY = rowY;
     ++appState.nextDisplayRow;
-    appState.hasPendingReading = false;
     updated = true;
   }
 
-  if (appState.pumpUiDirty) {
+  if (appState.headerDirty) {
     drawHeader();
+    appState.headerDirty = false;
+    headerUpdated = true;
+  }
+
+  if (appState.pumpUiDirty) {
     drawButtons();
     appState.pumpUiDirty = false;
+    buttonsUpdated = true;
+  }
+
+  if (!updated && !headerUpdated && !buttonsUpdated) {
+    return;
+  }
+
+  if (wrapped) {
+    M5.Display.display(0, Display::kRowsTop, M5.Display.width(), Display::kButtonY - Display::kRowsTop);
+    if (headerUpdated) {
+      M5.Display.display(0, 0, M5.Display.width(), Display::kHeaderBottom);
+    }
+    if (buttonsUpdated) {
+      M5.Display.display(Display::kPumpButtonX - 3,
+                         Display::kButtonY - 3,
+                         Display::kWifiButtonX + Display::kButtonW - Display::kPumpButtonX + 6,
+                         Display::kButtonH + 6);
+    }
+    return;
+  }
+
+  if (headerUpdated) {
     M5.Display.display(0, 0, M5.Display.width(), Display::kHeaderBottom);
+  }
+  if (firstUpdatedRowY >= 0) {
+    M5.Display.display(0,
+                       firstUpdatedRowY,
+                       M5.Display.width(),
+                       lastUpdatedRowY - firstUpdatedRowY + Display::kRowHeight);
+  }
+  if (buttonsUpdated) {
     M5.Display.display(Display::kPumpButtonX - 3,
                        Display::kButtonY - 3,
                        Display::kWifiButtonX + Display::kButtonW - Display::kPumpButtonX + 6,
                        Display::kButtonH + 6);
   }
-
-  if (!updated) {
-    return;
-  }
-
-  if (wrapped) {
-    M5.Display.display(0, 0, M5.Display.width(), Display::kButtonY);
-    return;
-  }
-
-  const int32_t rowY = Display::kRowsTop + static_cast<int32_t>(appState.nextDisplayRow - 1) * Display::kRowHeight;
-  M5.Display.display(0, 0, M5.Display.width(), Display::kHeaderBottom);
-  M5.Display.display(0, rowY, M5.Display.width(), Display::kRowHeight);
 }
 
 void startPump() {
@@ -429,6 +527,11 @@ void startPump() {
   digitalWrite(Sensor::kPumpPin, HIGH);
   appState.pumpRunning = true;
   appState.pumpStartedMs = millis();
+  ++appState.pumpCount;
+  appState.lastPumpElapsedSec = appState.pumpStartedMs / 1000;
+  appState.hasLastPumpTime = M5.Rtc.getDateTime(&appState.lastPumpDateTime);
+  queueLogEntry(makeEventLog(LogKind::PumpStarted));
+  appState.headerDirty = true;
   appState.pumpUiDirty = true;
   Serial.println("Pump started for 5 seconds");
 }
@@ -440,6 +543,7 @@ void stopPump() {
 
   digitalWrite(Sensor::kPumpPin, LOW);
   appState.pumpRunning = false;
+  appState.headerDirty = true;
   appState.pumpUiDirty = true;
   Serial.println("Pump stopped");
 }
@@ -594,12 +698,6 @@ void loop() {
 
   if (now - appState.lastDisplayRefreshMs >= Display::kRefreshIntervalMs) {
     appState.lastDisplayRefreshMs = now;
-    if (appState.pumpRunning) {
-      appState.pumpUiDirty = true;
-    }
-    if (appState.headerDirty) {
-      refreshHeaderAndButtons();
-    }
     refreshDisplay();
   }
 
