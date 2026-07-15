@@ -30,7 +30,7 @@ constexpr int kPower = 18;
 namespace CameraSettings {
 constexpr framesize_t kFrameSizeWithPsram = FRAMESIZE_VGA;
 constexpr framesize_t kFrameSizeWithoutPsram = FRAMESIZE_QVGA;
-constexpr int kJpegQuality = 15;
+constexpr int kJpegQuality = 10;
 }  // namespace CameraSettings
 
 namespace Network {
@@ -46,6 +46,9 @@ esp_err_t lastCameraError = ESP_OK;
 uint32_t captureCount = 0;
 uint32_t captureFailCount = 0;
 size_t lastCaptureBytes = 0;
+uint32_t lastAcquireMs = 0;
+uint32_t lastWriteMs = 0;
+uint32_t lastTotalMs = 0;
 
 const char* frameSizeName(framesize_t frameSize) {
   switch (frameSize) {
@@ -133,9 +136,9 @@ bool setupCamera() {
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = configuredFrameSize();
   config.jpeg_quality = CameraSettings::kJpegQuality;
-  config.fb_count = ESP.getPsramSize() > 0 ? 2 : 1;
+  config.fb_count = 1;
   config.fb_location = ESP.getPsramSize() > 0 ? CAMERA_FB_IN_PSRAM : CAMERA_FB_IN_DRAM;
-  config.grab_mode = ESP.getPsramSize() > 0 ? CAMERA_GRAB_LATEST : CAMERA_GRAB_WHEN_EMPTY;
+  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
 
   lastCameraError = esp_camera_init(&config);
   if (lastCameraError != ESP_OK) {
@@ -179,38 +182,57 @@ bool setupWifi() {
 
 void handleRoot() {
   String html;
-  html.reserve(900);
+  html.reserve(1800);
   html += F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
   html += F("<title>AtomS3R Camera</title>");
   html += F("<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:20px;background:#111;color:#eee}");
-  html += F("img{max-width:100%;height:auto;border:1px solid #444}a{color:#8cf}button{font-size:16px;padding:8px 12px}</style>");
+  html += F("img{max-width:100%;height:auto;border:1px solid #444}a{color:#8cf}button{font-size:16px;padding:8px 12px}");
+  html += F("table{border-collapse:collapse;margin:16px 0}td{border-bottom:1px solid #333;padding:4px 12px 4px 0}");
+  html += F("td:first-child{color:#aaa}.muted{color:#aaa}</style>");
   html += F("</head><body><h1>AtomS3R Camera</h1>");
-  html += F("<p><button onclick='reloadImage()'>Capture</button> <a href='/capture.jpg'>Open JPEG</a> <a href='/status'>Status</a></p>");
+  html += F("<p><button onclick='reloadImage()'>Capture</button> <a href='/capture.jpg'>Open JPEG</a> <a href='/status'>Status JSON</a></p>");
+  html += F("<table><tbody id='status'><tr><td>Status</td><td class='muted'>Loading...</td></tr></tbody></table>");
   html += F("<img id='capture' src='/capture.jpg' alt='capture'>");
-  html += F("<script>function reloadImage(){document.getElementById('capture').src='/capture.jpg?t='+Date.now();}</script>");
+  html += F("<script>");
+  html += F("const keys=['camera','cameraError','cameraErrorName','wifi','ip','rssi','frameSize','jpegQuality','captures','failures','lastBytes','lastAcquireMs','lastWriteMs','lastTotalMs','heap','psramSize','freePsram'];");
+  html += F("function renderStatus(s){document.getElementById('status').innerHTML=keys.map(k=>`<tr><td>${k}</td><td>${s[k]}</td></tr>`).join('');}");
+  html += F("async function loadStatus(){try{const r=await fetch('/status?t='+Date.now());renderStatus(await r.json());}catch(e){document.getElementById('status').innerHTML='<tr><td>Status</td><td>Failed to load</td></tr>';}}");
+  html += F("function reloadImage(){const img=document.getElementById('capture');img.onload=loadStatus;img.src='/capture.jpg?t='+Date.now();}");
+  html += F("document.getElementById('capture').onload=loadStatus;loadStatus();");
+  html += F("</script>");
   html += F("</body></html>");
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("Connection", "close");
   server.send(200, "text/html; charset=utf-8", html);
+  server.client().stop();
 }
 
 void handleStatus() {
-  char json[384];
+  char json[512];
   snprintf(json,
            sizeof(json),
-           "{\"camera\":%s,\"cameraError\":\"0x%x\",\"cameraErrorName\":\"%s\",\"wifi\":%s,\"ip\":\"%s\",\"frameSize\":\"%s\",\"jpegQuality\":%d,\"captures\":%lu,\"failures\":%lu,\"lastBytes\":%u,\"heap\":%u,\"psramSize\":%u,\"freePsram\":%u}",
+           "{\"camera\":%s,\"cameraError\":\"0x%x\",\"cameraErrorName\":\"%s\",\"wifi\":%s,\"ip\":\"%s\",\"rssi\":%d,\"frameSize\":\"%s\",\"jpegQuality\":%d,\"captures\":%lu,\"failures\":%lu,\"lastBytes\":%u,\"lastAcquireMs\":%lu,\"lastWriteMs\":%lu,\"lastTotalMs\":%lu,\"heap\":%u,\"psramSize\":%u,\"freePsram\":%u}",
            cameraReady ? "true" : "false",
            static_cast<unsigned int>(lastCameraError),
            esp_err_to_name(lastCameraError),
            wifiReady ? "true" : "false",
            wifiReady ? WiFi.localIP().toString().c_str() : "",
+           wifiReady ? WiFi.RSSI() : 0,
            frameSizeName(configuredFrameSize()),
            CameraSettings::kJpegQuality,
            static_cast<unsigned long>(captureCount),
            static_cast<unsigned long>(captureFailCount),
            static_cast<unsigned int>(lastCaptureBytes),
+           static_cast<unsigned long>(lastAcquireMs),
+           static_cast<unsigned long>(lastWriteMs),
+           static_cast<unsigned long>(lastTotalMs),
            static_cast<unsigned int>(ESP.getFreeHeap()),
            static_cast<unsigned int>(ESP.getPsramSize()),
            static_cast<unsigned int>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("Connection", "close");
   server.send(200, "application/json", json);
+  server.client().stop();
 }
 
 void handleCapture() {
@@ -219,7 +241,9 @@ void handleCapture() {
     return;
   }
 
+  const uint32_t startedMs = millis();
   camera_fb_t* fb = esp_camera_fb_get();
+  const uint32_t acquiredMs = millis();
   if (fb == nullptr) {
     ++captureFailCount;
     server.send(500, "text/plain", "capture failed");
@@ -234,16 +258,32 @@ void handleCapture() {
   }
 
   ++captureCount;
+  lastAcquireMs = acquiredMs - startedMs;
   lastCaptureBytes = fb->len;
-  Serial.printf("capture %lu: %u bytes\n",
+  Serial.printf("capture %lu: %u bytes acquired=%lums\n",
                 static_cast<unsigned long>(captureCount),
-                static_cast<unsigned int>(fb->len));
+                static_cast<unsigned int>(fb->len),
+                static_cast<unsigned long>(lastAcquireMs));
 
   WiFiClient client = server.client();
+  client.setNoDelay(true);
+  server.sendHeader("Cache-Control", "no-store");
+  server.sendHeader("Connection", "close");
   server.setContentLength(fb->len);
   server.send(200, "image/jpeg", "");
+  const uint32_t writeStartedMs = millis();
   client.write(fb->buf, fb->len);
+  lastWriteMs = millis() - writeStartedMs;
+  lastTotalMs = millis() - startedMs;
+  client.flush();
+  client.stop();
   esp_camera_fb_return(fb);
+
+  Serial.printf("capture %lu done: write=%lums total=%lums rssi=%d\n",
+                static_cast<unsigned long>(captureCount),
+                static_cast<unsigned long>(lastWriteMs),
+                static_cast<unsigned long>(lastTotalMs),
+                WiFi.RSSI());
 }
 
 void setupServer() {
