@@ -31,6 +31,8 @@ namespace CameraSettings {
 constexpr framesize_t kFrameSizeWithPsram = FRAMESIZE_VGA;
 constexpr framesize_t kFrameSizeWithoutPsram = FRAMESIZE_QVGA;
 constexpr int kJpegQuality = 10;
+constexpr uint8_t kDiscardFramesBeforeCapture = 1;
+constexpr uint32_t kFrameSettleDelayMs = 30;
 }  // namespace CameraSettings
 
 namespace Network {
@@ -102,6 +104,19 @@ const char* frameSizeName(framesize_t frameSize) {
 framesize_t configuredFrameSize() {
   return ESP.getPsramSize() > 0 ? CameraSettings::kFrameSizeWithPsram
                                 : CameraSettings::kFrameSizeWithoutPsram;
+}
+
+camera_fb_t* captureFreshFrame() {
+  for (uint8_t i = 0; i < CameraSettings::kDiscardFramesBeforeCapture; ++i) {
+    camera_fb_t* staleFrame = esp_camera_fb_get();
+    if (staleFrame == nullptr) {
+      return nullptr;
+    }
+    esp_camera_fb_return(staleFrame);
+    delay(CameraSettings::kFrameSettleDelayMs);
+  }
+
+  return esp_camera_fb_get();
 }
 
 void setupCameraPower() {
@@ -191,10 +206,10 @@ void handleRoot() {
   html += F("td:first-child{color:#aaa}.muted{color:#aaa}</style>");
   html += F("</head><body><h1>AtomS3R Camera</h1>");
   html += F("<p><button onclick='reloadImage()'>Capture</button> <a href='/capture.jpg'>Open JPEG</a> <a href='/status'>Status JSON</a></p>");
-  html += F("<table><tbody id='status'><tr><td>Status</td><td class='muted'>Loading...</td></tr></tbody></table>");
   html += F("<img id='capture' src='/capture.jpg' alt='capture'>");
+  html += F("<table><tbody id='status'><tr><td>Status</td><td class='muted'>Loading...</td></tr></tbody></table>");
   html += F("<script>");
-  html += F("const keys=['camera','cameraError','cameraErrorName','wifi','ip','rssi','frameSize','jpegQuality','captures','failures','lastBytes','lastAcquireMs','lastWriteMs','lastTotalMs','heap','psramSize','freePsram'];");
+  html += F("const keys=['camera','cameraError','cameraErrorName','wifi','ip','rssi','frameSize','jpegQuality','discardFramesBeforeCapture','captures','failures','lastBytes','lastAcquireMs','lastWriteMs','lastTotalMs','heap','psramSize','freePsram'];");
   html += F("function renderStatus(s){document.getElementById('status').innerHTML=keys.map(k=>`<tr><td>${k}</td><td>${s[k]}</td></tr>`).join('');}");
   html += F("async function loadStatus(){try{const r=await fetch('/status?t='+Date.now());renderStatus(await r.json());}catch(e){document.getElementById('status').innerHTML='<tr><td>Status</td><td>Failed to load</td></tr>';}}");
   html += F("function reloadImage(){const img=document.getElementById('capture');img.onload=loadStatus;img.src='/capture.jpg?t='+Date.now();}");
@@ -211,7 +226,7 @@ void handleStatus() {
   char json[512];
   snprintf(json,
            sizeof(json),
-           "{\"camera\":%s,\"cameraError\":\"0x%x\",\"cameraErrorName\":\"%s\",\"wifi\":%s,\"ip\":\"%s\",\"rssi\":%d,\"frameSize\":\"%s\",\"jpegQuality\":%d,\"captures\":%lu,\"failures\":%lu,\"lastBytes\":%u,\"lastAcquireMs\":%lu,\"lastWriteMs\":%lu,\"lastTotalMs\":%lu,\"heap\":%u,\"psramSize\":%u,\"freePsram\":%u}",
+           "{\"camera\":%s,\"cameraError\":\"0x%x\",\"cameraErrorName\":\"%s\",\"wifi\":%s,\"ip\":\"%s\",\"rssi\":%d,\"frameSize\":\"%s\",\"jpegQuality\":%d,\"discardFramesBeforeCapture\":%u,\"captures\":%lu,\"failures\":%lu,\"lastBytes\":%u,\"lastAcquireMs\":%lu,\"lastWriteMs\":%lu,\"lastTotalMs\":%lu,\"heap\":%u,\"psramSize\":%u,\"freePsram\":%u}",
            cameraReady ? "true" : "false",
            static_cast<unsigned int>(lastCameraError),
            esp_err_to_name(lastCameraError),
@@ -220,6 +235,7 @@ void handleStatus() {
            wifiReady ? WiFi.RSSI() : 0,
            frameSizeName(configuredFrameSize()),
            CameraSettings::kJpegQuality,
+           CameraSettings::kDiscardFramesBeforeCapture,
            static_cast<unsigned long>(captureCount),
            static_cast<unsigned long>(captureFailCount),
            static_cast<unsigned int>(lastCaptureBytes),
@@ -242,7 +258,7 @@ void handleCapture() {
   }
 
   const uint32_t startedMs = millis();
-  camera_fb_t* fb = esp_camera_fb_get();
+  camera_fb_t* fb = captureFreshFrame();
   const uint32_t acquiredMs = millis();
   if (fb == nullptr) {
     ++captureFailCount;
